@@ -1,0 +1,13 @@
+cargo-features = ["edition"]
+
+[package]
+name = "lseq"
+version = "0.1.0"
+authors = ["Nick Cameron <ncameron@mozilla.com>"]
+edition = "2018"
+
+[dependencies]
+bit-vec = "0.5"
+rand = "0.5"
+serde = "1.0"
+serde_derive = "1.0"

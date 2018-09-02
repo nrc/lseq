@@ -16,10 +16,7 @@ pub struct Node {
     initial_width: u64,
 }
 
-// TODO refactoring
-// factor out some more functions
-// IdSlice
-// avoid allocations
+// TODO IdSlice?
 
 impl Node {
     pub fn new(id: NodeId) -> Node {
@@ -44,12 +41,12 @@ impl Node {
             assert!(lower_bound.depth() > level);
             assert!(upper_bound.depth() > level);
             if level == lower_bound.depth() - 1 || level == upper_bound.depth() - 1 {
-                return self.new_id_at_level(level, lower_bound, upper_bound);
+                return self.new_id_at_level_bounded(level, lower_bound, upper_bound);
             }
 
             if lower_bound.indices[level] < upper_bound.indices[level] {
                 // lower_bound and upper_bound are diverging.
-                return self.new_id_at_level(level, lower_bound, upper_bound)
+                return self.new_id_at_level_bounded(level, lower_bound, upper_bound)
             }
             assert!(lower_bound.indices[level] == upper_bound.indices[level]);
 
@@ -57,7 +54,7 @@ impl Node {
         }
     }
 
-    fn new_id_at_level(&mut self, level: usize, lower_bound: &Id, upper_bound: &Id) -> Id {
+    fn new_id_at_level_bounded(&mut self, level: usize, lower_bound: &Id, upper_bound: &Id) -> Id {
         assert!(lower_bound.depth() > level && upper_bound.depth() > level);
         let level_lower_bound = lower_bound.indices[level];
         let level_upper_bound = upper_bound.indices[level];
@@ -68,26 +65,28 @@ impl Node {
             return self.truncate_and_replace_index(lower_bound, level, new_index);
         }
 
-        if level_lower_bound < level_upper_bound {
-            assert!(level_lower_bound + 1 == level_upper_bound);
-            if lower_bound.depth() > level + 1 {
-                let width = self.width_at(level + 1);
-                let rhs = self.truncate_and_replace_index(lower_bound, level + 1, width - 1);
-                return self.new_id_at_level(level + 1, lower_bound, &rhs);
-            }
-
-            if upper_bound.depth() == level + 1 {
-                // Both bounds terminate at level, and there is no space between them, pick any extension to lb
-                let width = self.width_at(level);
-                let new_index = self.pick_index(level, 0, width);
-                assert!(new_index != 0);
-                return self.append_index(&lower_bound, new_index);
+        if level_lower_bound <= level_upper_bound {
+            assert!(level_lower_bound + 1 >= level_upper_bound);
+            if lower_bound.depth() > level + 1 || upper_bound.depth() == level + 1 {
+                return self.new_id_at_level_bounded_below(level + 1, lower_bound);
             }
         }
 
         assert!((lower_bound.depth() == level + 1 || level_lower_bound < level_upper_bound) && upper_bound.depth() > level + 1);
         let lhs = self.append_index(lower_bound, 0);
-        self.new_id_at_level(level + 1, &lhs, upper_bound)
+        self.new_id_at_level_bounded(level + 1, &lhs, upper_bound)
+    }
+
+    fn new_id_at_level_bounded_below(&mut self, level: usize, lower_bound: &Id) -> Id {
+        assert!(lower_bound.depth() >= level);
+        let width = self.width_at(level);
+        if lower_bound.depth() == level {
+            let new_index = self.pick_index(level, 0, width);
+            self.append_index(&lower_bound, new_index)
+        } else {
+            let rhs = self.truncate_and_replace_index(lower_bound, level, width - 1);
+            self.new_id_at_level_bounded(level, lower_bound, &rhs)
+        }
     }
 
     fn level_direction(&mut self, level: usize) -> bool {
@@ -121,6 +120,8 @@ impl Node {
     }
 
     fn append_index(&self, id: &Id, new_index: u64) -> Id {
+        // FIXME could be more efficient than clone here by making the new indices
+        // have the capacity of id.indices.len() + 1.
         let mut new_id = id.clone();
         new_id.node = self.id;
         new_id.indices.push(new_index);
@@ -144,6 +145,7 @@ impl Node {
     }
 
     // TODO wouldn't need an end if l bound and r bound could be equal
+    // would consider bounds == to mean insert above
     pub fn end(&self) -> Id {
         Id {
             indices: vec![(self.initial_width - 1) as u64],

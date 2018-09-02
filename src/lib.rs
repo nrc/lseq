@@ -76,34 +76,39 @@ impl Node {
             // go up a level on lower_bound either existing or adding a level
             // if we ever add a level 0, we must immediately go up a level, i.e., 0 is never a leaf
             if lower_bound.depth() == depth {
-                let mut cur_depth = depth;
-                let mut new_index = 0;
-                let mut new_id = lower_bound.clone();
-                while new_index == 0 {
-                    // Add a level if we get index 0.
-                    let width = self.width_at(cur_depth);
-                    new_index = self.pick_index(cur_depth, 0, width);
-                    new_id = self.append_index(&new_id, new_index);
-                    cur_depth = cur_depth + 1;
-                }
-                return new_id;
+                let width = self.width_at(depth);
+                let new_index = self.pick_index(depth, 0, width);
+                assert!(new_index != 0);
+                return self.append_index(&lower_bound, new_index);
             } else {
+                assert!(lower_bound.depth() > depth);
                 if level_lower_bound + 1 < level_upper_bound {
                     // There is room at depth for another index
                     let lhs = self.truncate_and_replace_index(lower_bound, depth, level_lower_bound + 1);
                     assert!(&lhs < upper_bound, "{:?} {:?} {}", lhs, upper_bound, depth);
                     return self.id(&lhs, upper_bound);
                 } else {
-                    // There is no room, go to the next level.
-                    let width = self.width_at(depth + 1);
-                    if lower_bound.index[depth] < width - 1 {
-                        let rhs = self.truncate_and_replace_index(lower_bound, depth + 1, width - 1);
-                        assert!(lower_bound < &rhs, "{:?} {:?} {}", lower_bound, rhs, depth);
-                        return self.id(lower_bound, &rhs);
-                    } else {
-                        // TODO need to loop
-                        unimplemented!();
+                    // Iterate up levels until we find a level we can insert into.
+                    let mut cur_depth = depth;
+                    let mut width;
+                    loop {
+                        cur_depth += 1;
+                        if lower_bound.depth() == cur_depth {
+                            let width = self.width_at(cur_depth);
+                            let new_index = self.pick_index(cur_depth, 0, width);
+                            let new_id = self.append_index(&lower_bound, new_index);
+                            assert!(new_index != 0);
+                            return new_id;
+                        }
+                        width = self.width_at(cur_depth);
+                        if lower_bound.index[cur_depth] < width - 1 {
+                            break;
+                        }
                     }
+
+                    let rhs = self.truncate_and_replace_index(lower_bound, cur_depth, width - 1);
+                    assert!(lower_bound < &rhs, "{:?} {:?} {}", lower_bound, rhs, cur_depth);
+                    return self.id(lower_bound, &rhs);
                 }
             }
         }
@@ -362,17 +367,6 @@ mod tests {
         assert!(new_id.index.len() == 2);
         assert!(new_id.index[0] == 4);
         assert!(new_id.index[1] == 0);
-    }
-
-    #[test]
-    fn test_replace_index() {
-        let node = Node::new(NodeId::new(0));
-
-        let id = Id { index: vec![4], node: NodeId::new(0) };
-        let new_id = node.replace_index(&id, 0);
-        assert!(new_id.node == NodeId::new(0));
-        assert!(new_id.index.len() == 1);
-        assert!(new_id.index[0] == 0);
     }
 
     #[test]

@@ -17,10 +17,9 @@ pub struct Node {
 }
 
 // TODO refactoring
-// better names - functions, index
-// consistent on off by one on depth
 // factor out some more functions
 // IdSlice
+// avoid allocations
 
 impl Node {
     pub fn new(id: NodeId) -> Node {
@@ -33,170 +32,121 @@ impl Node {
         result
     }
 
-    pub fn id(&mut self, lower_bound: &Id, upper_bound: &Id) -> Id {
+    pub fn new_id_with_bounds(&mut self, lower_bound: &Id, upper_bound: &Id) -> Id {
+        assert!(lower_bound.depth() > 0);
         assert!(upper_bound.depth() > 0);
         assert!(lower_bound < upper_bound, "{:?} >= {:?}", lower_bound, upper_bound);
 
-        let mut depth = 0;
+        // This loop walks up the bounds in tandem until one runs out of levels, or
+        // the two are diverging.
+        let mut level = 0;
         loop {
-            if depth == lower_bound.depth() {
-                if depth == upper_bound.depth() {
-                    return self.id_eq_depth(depth, lower_bound, upper_bound);
-                } else {
-                    return self.id_lower_depth(depth, lower_bound, upper_bound);
-                }
+            assert!(lower_bound.depth() > level);
+            assert!(upper_bound.depth() > level);
+            if level == lower_bound.depth() - 1 || level == upper_bound.depth() - 1 {
+                return self.new_id_at_level(level, lower_bound, upper_bound);
             }
-            // lower_bound.depth() > depth && lower_bound < upper_bound
-            // therefore upper_bound.depth() > depth
-            assert!(upper_bound.depth() > depth);
 
-            if lower_bound.index[depth] < upper_bound.index[depth] {
+            if lower_bound.indices[level] < upper_bound.indices[level] {
                 // lower_bound and upper_bound are diverging.
-                return self.id_eq_depth(depth + 1, lower_bound, upper_bound)
+                return self.new_id_at_level(level, lower_bound, upper_bound)
             }
-            assert!(lower_bound.index[depth] == upper_bound.index[depth]);
+            assert!(lower_bound.indices[level] == upper_bound.indices[level]);
 
-            depth += 1;
-            // Up to depth, lower_bound == upper_bound
-
-            // Both bounds have more levels; continue.
+            level += 1;
         }
     }
 
-    // Invariant for all these functions: either a bound has > depth levels or
-    // lower.index[depth - 1] < upper.index[depth - 1]
-    // and both bounds have at least depth levels
-    fn id_eq_depth(&mut self, depth: usize, lower_bound: &Id, upper_bound: &Id) -> Id {
-        let level_lower_bound = lower_bound.index[depth - 1];
-        let level_upper_bound = upper_bound.index[depth - 1];
+    fn new_id_at_level(&mut self, level: usize, lower_bound: &Id, upper_bound: &Id) -> Id {
+        assert!(lower_bound.depth() > level && upper_bound.depth() > level);
+        let level_lower_bound = lower_bound.indices[level];
+        let level_upper_bound = upper_bound.indices[level];
 
-        assert!(level_upper_bound != level_lower_bound);
-        if level_upper_bound - level_lower_bound == 1 {
-            // No room between lower_bound and upper_bound
-            // go up a level on lower_bound either existing or adding a level
-            // if we ever add a level 0, we must immediately go up a level, i.e., 0 is never a leaf
-            if lower_bound.depth() == depth {
-                let width = self.width_at(depth);
-                let new_index = self.pick_index(depth, 0, width);
+        if level_lower_bound + 1 < level_upper_bound {
+            // there is room to add an id between lower_bound and upper_bound
+            let new_index = self.pick_index(level, level_lower_bound, level_upper_bound);
+            return self.truncate_and_replace_index(lower_bound, level, new_index);
+        }
+
+        if level_lower_bound < level_upper_bound {
+            assert!(level_lower_bound + 1 == level_upper_bound);
+            if lower_bound.depth() > level + 1 {
+                let width = self.width_at(level + 1);
+                let rhs = self.truncate_and_replace_index(lower_bound, level + 1, width - 1);
+                return self.new_id_at_level(level + 1, lower_bound, &rhs);
+            }
+
+            if upper_bound.depth() == level + 1 {
+                // Both bounds terminate at level, and there is no space between them, pick any extension to lb
+                let width = self.width_at(level);
+                let new_index = self.pick_index(level, 0, width);
                 assert!(new_index != 0);
                 return self.append_index(&lower_bound, new_index);
-            } else {
-                assert!(lower_bound.depth() > depth);
-                if level_lower_bound + 1 < level_upper_bound {
-                    // There is room at depth for another index
-                    let lhs = self.truncate_and_replace_index(lower_bound, depth, level_lower_bound + 1);
-                    assert!(&lhs < upper_bound, "{:?} {:?} {}", lhs, upper_bound, depth);
-                    return self.id(&lhs, upper_bound);
-                } else {
-                    // Iterate up levels until we find a level we can insert into.
-                    let mut cur_depth = depth;
-                    let mut width;
-                    loop {
-                        cur_depth += 1;
-                        if lower_bound.depth() == cur_depth {
-                            let width = self.width_at(cur_depth);
-                            let new_index = self.pick_index(cur_depth, 0, width);
-                            let new_id = self.append_index(&lower_bound, new_index);
-                            assert!(new_index != 0);
-                            return new_id;
-                        }
-                        width = self.width_at(cur_depth);
-                        if lower_bound.index[cur_depth] < width - 1 {
-                            break;
-                        }
-                    }
-
-                    let rhs = self.truncate_and_replace_index(lower_bound, cur_depth, width - 1);
-                    assert!(lower_bound < &rhs, "{:?} {:?} {}", lower_bound, rhs, cur_depth);
-                    return self.id(lower_bound, &rhs);
-                }
             }
         }
 
-        // Invariant: there is room to add an id between lower_bound and upper_bound
-
-        let new_index = self.pick_index(depth, level_lower_bound, level_upper_bound);
-        self.truncate_and_replace_index(lower_bound, depth, new_index)
-    }
-
-    // If upper_bound.index[depth + 1] > 0 then pick an id between 0 and upper_bound
-    // else go up a level on the right (which must exist)
-    fn id_lower_depth(&mut self, depth: usize, lower_bound: &Id, upper_bound: &Id) -> Id {
-        assert!(lower_bound.depth() == depth && upper_bound.depth() > depth);
-        let mut lhs = lower_bound.clone();
-        lhs.index.push(0);
-        // FIXME A little bit inefficient since we'll rewalk depth levels.
-        self.id(&lhs, upper_bound)
+        assert!((lower_bound.depth() == level + 1 || level_lower_bound < level_upper_bound) && upper_bound.depth() > level + 1);
+        let lhs = self.append_index(lower_bound, 0);
+        self.new_id_at_level(level + 1, &lhs, upper_bound)
     }
 
     fn level_direction(&mut self, level: usize) -> bool {
-        if level < self.directions.len() {
-            self.directions[level]
-        } else if level == self.directions.len() {
+        while level >= self.directions.len() {
             let result = random_bool();
             self.directions.push(result);
-            result
-        } else {
-            panic!("Skipped a level");
         }
+
+        return self.directions[level];
     }
 
-    fn pick_index(&mut self, depth: usize, lower_bound: u64, upper_bound: u64) -> u64 {
+    fn pick_index(&mut self, level: usize, lower_bound: u64, upper_bound: u64) -> u64 {
         assert!(lower_bound + 1 < upper_bound, "{} < {}", lower_bound + 1, upper_bound);
-        if self.level_direction(depth) {
-            Self::pick_index_upper_boundary(lower_bound, upper_bound)
+        if self.level_direction(level) {
+            let mut boundary = upper_bound.saturating_sub(DEFAULT_BOUNDARY + 1);
+            if boundary < lower_bound {
+                boundary = lower_bound;
+            }
+            random_range(boundary, upper_bound)
         } else {
-            Self::pick_index_lower_boundary(lower_bound, upper_bound)
+            let mut boundary = lower_bound + DEFAULT_BOUNDARY;
+            if boundary > upper_bound {
+                boundary = upper_bound;
+            }
+            random_range(lower_bound, boundary)
         }
     }
 
-    fn pick_index_lower_boundary(lower_bound: u64, upper_bound: u64) -> u64 {
-        let mut boundary = lower_bound + DEFAULT_BOUNDARY;
-        if boundary > upper_bound {
-            boundary = upper_bound;
-        }
-        random_range(lower_bound, boundary)
-    }
-
-    fn pick_index_upper_boundary(lower_bound: u64, upper_bound: u64) -> u64 {
-        let mut boundary = upper_bound.saturating_sub(DEFAULT_BOUNDARY + 1);
-        if boundary < lower_bound {
-            boundary = lower_bound;
-        }
-        random_range(boundary, upper_bound)
-    }
-
-    fn width_at(&self, depth: usize) -> u64 {
-        self.initial_width * 2_u64.pow(depth as u32)
+    fn width_at(&self, level: usize) -> u64 {
+        self.initial_width * 2_u64.pow(level as u32)
     }
 
     fn append_index(&self, id: &Id, new_index: u64) -> Id {
         let mut new_id = id.clone();
         new_id.node = self.id;
-        new_id.index.push(new_index);
+        new_id.indices.push(new_index);
         new_id
     }
 
-    fn truncate_and_replace_index(&self, id: &Id, depth: usize, new_index: u64) -> Id {
-        assert!(depth <= id.index.len());
+    fn truncate_and_replace_index(&self, id: &Id, level: usize, new_index: u64) -> Id {
+        assert!(level < id.indices.len());
         let mut new_id = id.clone();
         new_id.node = self.id;
-        new_id.index[depth - 1] = new_index;
-        new_id.index.truncate(depth);
+        new_id.indices[level] = new_index;
+        new_id.indices.truncate(level + 1);
         new_id
     }
 
     pub fn begin(&self) -> Id {
         Id {
-            index: vec![],
+            indices: vec![0],
             node: self.id,
         }
     }
 
-    // FIXME wouldn't need an end if l bound and r bound could be equal
+    // TODO wouldn't need an end if l bound and r bound could be equal
     pub fn end(&self) -> Id {
         Id {
-            index: vec![(self.initial_width - 1) as u64],
+            indices: vec![(self.initial_width - 1) as u64],
             node: self.id,
         }
     }
@@ -213,21 +163,21 @@ impl NodeId {
 }
 
 /// An LSeq Id, created by a `Node`.
-// FIXME could optimise Eq/ParialEq by comparing pointer value of index
+// FIXME could optimise Eq/ParialEq by comparing pointer value of indices
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Serialize, Deserialize)]
 pub struct Id {
     // Ordering of fields is for derive(Ord).
 
-    // Index into the tree of identifiers. The nth entry in the `Vec` specifies
+    // Indices into the tree of identifiers. The nth entry in the `Vec` specifies
     // a node in the nth level of the tree.
-    index: Vec<u64>,
+    indices: Vec<u64>,
     // The `Node` which created this id.
     node: NodeId,
 }
 
 impl Id {
     fn depth(&self) -> usize {
-        self.index.len()
+        self.indices.len()
     }
 }
 
@@ -260,13 +210,13 @@ mod tests {
 
     #[test]
     fn test_id_props() {
-        let a = Id { index: vec![], node: NodeId(0) };
-        let b = Id { index: vec![], node: NodeId(2) };
-        let c = Id { index: vec![5, 32, 100, 2], node: NodeId(2) };
-        let d = Id { index: vec![5, 32, 100, 2], node: NodeId(2) };
-        let e = Id { index: vec![5, 32, 100, 2], node: NodeId(3) };
-        let f = Id { index: vec![5, 32, 100], node: NodeId(2) };
-        let g = Id { index: vec![4, 40], node: NodeId(0) };
+        let a = Id { indices: vec![], node: NodeId(0) };
+        let b = Id { indices: vec![], node: NodeId(2) };
+        let c = Id { indices: vec![5, 32, 100, 2], node: NodeId(2) };
+        let d = Id { indices: vec![5, 32, 100, 2], node: NodeId(2) };
+        let e = Id { indices: vec![5, 32, 100, 2], node: NodeId(3) };
+        let f = Id { indices: vec![5, 32, 100], node: NodeId(2) };
+        let g = Id { indices: vec![4, 40], node: NodeId(0) };
 
         // Equality, inequality
         assert!(a == a);
@@ -325,22 +275,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
-    fn test_bad_level_direction_1() {
-        let mut node = Node::new(NodeId::new(0));
-        node.level_direction(2);
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_bad_level_direction_2() {
-        let mut node = Node::new(NodeId::new(0));
-        node.level_direction(0);
-        node.level_direction(1);
-        node.level_direction(6);
-    }
-
-    #[test]
     fn test_width_at() {
         let mut node = Node::new(NodeId::new(0));
         node.initial_width = 5;
@@ -355,36 +289,36 @@ mod tests {
     fn test_append_index() {
         let node = Node::new(NodeId::new(0));
 
-        let id = Id { index: vec![], node: NodeId::new(42) };
+        let id = Id { indices: vec![], node: NodeId::new(42) };
         let new_id = node.append_index(&id, 6);
         assert!(new_id.node == NodeId::new(0));
-        assert!(new_id.index.len() == 1);
-        assert!(new_id.index[0] == 6);
+        assert!(new_id.indices.len() == 1);
+        assert!(new_id.indices[0] == 6);
 
-        let id = Id { index: vec![4], node: NodeId::new(0) };
+        let id = Id { indices: vec![4], node: NodeId::new(0) };
         let new_id = node.append_index(&id, 0);
         assert!(new_id.node == NodeId::new(0));
-        assert!(new_id.index.len() == 2);
-        assert!(new_id.index[0] == 4);
-        assert!(new_id.index[1] == 0);
+        assert!(new_id.indices.len() == 2);
+        assert!(new_id.indices[0] == 4);
+        assert!(new_id.indices[1] == 0);
     }
 
     #[test]
     fn test_truncate_and_replace_index() {
         let node = Node::new(NodeId::new(0));
 
-        let id = Id { index: vec![4], node: NodeId::new(0) };
+        let id = Id { indices: vec![4], node: NodeId::new(0) };
+        let new_id = node.truncate_and_replace_index(&id, 0, 0);
+        assert!(new_id.node == NodeId::new(0));
+        assert!(new_id.indices.len() == 1);
+        assert!(new_id.indices[0] == 0);
+
+        let id = Id { indices: vec![4, 5, 3, 2], node: NodeId::new(0) };
         let new_id = node.truncate_and_replace_index(&id, 1, 0);
         assert!(new_id.node == NodeId::new(0));
-        assert!(new_id.index.len() == 1);
-        assert!(new_id.index[0] == 0);
-
-        let id = Id { index: vec![4, 5, 3, 2], node: NodeId::new(0) };
-        let new_id = node.truncate_and_replace_index(&id, 2, 0);
-        assert!(new_id.node == NodeId::new(0));
-        assert!(new_id.index.len() == 2);
-        assert!(new_id.index[0] == 4);
-        assert!(new_id.index[1] == 0);
+        assert!(new_id.indices.len() == 2);
+        assert!(new_id.indices[0] == 4);
+        assert!(new_id.indices[1] == 0);
     }
 
     #[test]
@@ -407,8 +341,8 @@ mod tests {
         let mut node = Node::new(NodeId::new(0));
 
         for _ in 0..100 {
-            let a = node.id(&node.begin(), &node.end());
-            let b = node.id(&a, &node.end());
+            let a = node.new_id_with_bounds(&node.begin(), &node.end());
+            let b = node.new_id_with_bounds(&a, &node.end());
 
             assert!(a != node.begin());
             assert!(a != node.end());
@@ -443,7 +377,7 @@ mod tests {
                 }
                 let id_0 = results.iter().nth(index_0).unwrap();
                 let id_1 = results.iter().nth(index_1).unwrap();
-                let new = node.id(id_0, id_1);
+                let new = node.new_id_with_bounds(id_0, id_1);
                 assert!(&new != id_0);
                 assert!(&new != id_1);
                 assert!(&new > id_0);
@@ -462,7 +396,7 @@ mod tests {
             let first = node.begin();
             let mut prev = node.end();
             for _ in 0..200 {
-                let new = node.id(&first, &prev);
+                let new = node.new_id_with_bounds(&first, &prev);
                 assert!(&new != &first);
                 assert!(&new != &prev);
                 assert!(&new > &first);
@@ -479,7 +413,7 @@ mod tests {
             let last = node.end();
             let mut prev = node.begin();
             for _ in 0..200 {
-                let new = node.id(&prev, &last);
+                let new = node.new_id_with_bounds(&prev, &last);
                 assert!(&new != &prev);
                 assert!(&new != &last);
                 assert!(&new > &prev);

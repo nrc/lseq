@@ -32,7 +32,22 @@ impl Node {
     pub fn new_id_with_bounds(&mut self, lower_bound: &Id, upper_bound: &Id) -> Id {
         assert!(lower_bound.depth() > 0);
         assert!(upper_bound.depth() > 0);
-        assert!(lower_bound < upper_bound, "{:?} >= {:?}", lower_bound, upper_bound);
+        assert!(lower_bound <= upper_bound, "{:?} > {:?}", lower_bound, upper_bound);
+
+        // In the rest of the functions, we assume that the bounds can't be equal.
+        if lower_bound == upper_bound {
+            let last_level = lower_bound.depth() - 1;
+            let last_level_index = lower_bound.indices[last_level];
+            let width = self.width_at(last_level);
+            if last_level_index + 1 < self.width_at(last_level) {
+                let new_index =
+                    self.pick_index(last_level, last_level_index, width);
+                return self.truncate_and_replace_index(lower_bound, last_level, new_index);
+            } else {
+                let new_index = self.pick_index(last_level + 1, 0, self.width_at(last_level + 1));
+                return self.append_index(&lower_bound, new_index);
+            }
+        }
 
         // This loop walks up the bounds in tandem until one runs out of levels, or
         // the two are diverging.
@@ -40,21 +55,20 @@ impl Node {
         loop {
             assert!(lower_bound.depth() > level);
             assert!(upper_bound.depth() > level);
-            if level == lower_bound.depth() - 1 || level == upper_bound.depth() - 1 {
+
+            if level == lower_bound.depth() - 1 || level == upper_bound.depth() - 1 
+                || lower_bound.indices[level] < upper_bound.indices[level]
+            {
                 return self.new_id_at_level_bounded(level, lower_bound, upper_bound);
             }
 
-            if lower_bound.indices[level] < upper_bound.indices[level] {
-                // lower_bound and upper_bound are diverging.
-                return self.new_id_at_level_bounded(level, lower_bound, upper_bound)
-            }
             assert!(lower_bound.indices[level] == upper_bound.indices[level]);
-
             level += 1;
         }
     }
 
     fn new_id_at_level_bounded(&mut self, level: usize, lower_bound: &Id, upper_bound: &Id) -> Id {
+        assert!(lower_bound < upper_bound);
         assert!(lower_bound.depth() > level && upper_bound.depth() > level);
         let level_lower_bound = lower_bound.indices[level];
         let level_upper_bound = upper_bound.indices[level];
@@ -77,15 +91,16 @@ impl Node {
         self.new_id_at_level_bounded(level + 1, &lhs, upper_bound)
     }
 
+    // The implicit upper bound here is the next index on level with no further indices
     fn new_id_at_level_bounded_below(&mut self, level: usize, lower_bound: &Id) -> Id {
         assert!(lower_bound.depth() >= level);
         let width = self.width_at(level);
-        if lower_bound.depth() == level {
-            let new_index = self.pick_index(level, 0, width);
-            self.append_index(&lower_bound, new_index)
-        } else {
+        if lower_bound.depth() > level && lower_bound.indices[level] < width - 1 {
             let rhs = self.truncate_and_replace_index(lower_bound, level, width - 1);
             self.new_id_at_level_bounded(level, lower_bound, &rhs)
+        } else {
+            let new_index = self.pick_index(level, 0, width);
+            self.append_index(&lower_bound, new_index)
         }
     }
 
@@ -140,15 +155,6 @@ impl Node {
     pub fn begin(&self) -> Id {
         Id {
             indices: vec![0],
-            node: self.id,
-        }
-    }
-
-    // TODO wouldn't need an end if l bound and r bound could be equal
-    // would consider bounds == to mean insert above
-    pub fn end(&self) -> Id {
-        Id {
-            indices: vec![(self.initial_width - 1) as u64],
             node: self.id,
         }
     }
@@ -343,17 +349,14 @@ mod tests {
         let mut node = Node::new(NodeId::new(0));
 
         for _ in 0..100 {
-            let a = node.new_id_with_bounds(&node.begin(), &node.end());
-            let b = node.new_id_with_bounds(&a, &node.end());
+            let a = node.new_id_with_bounds(&node.begin(), &node.begin());
+            let b = node.new_id_with_bounds(&a, &a);
 
             assert!(a != node.begin());
-            assert!(a != node.end());
             assert!(b != node.begin());
-            assert!(b != node.end());
 
             assert!(node.begin() < a);
             assert!(a < b);
-            assert!(b < node.end());
         }
     }
 
@@ -365,13 +368,9 @@ mod tests {
             let mut node = Node::new(NodeId::new(0));
             let mut results = BTreeSet::new();
             results.insert(node.begin());
-            results.insert(node.end());
             for _ in 0..200 {
                 let mut index_0 = rng.gen_range(0, results.len());
                 let mut index_1 = rng.gen_range(0, results.len());
-                while index_0 == index_1 {
-                    index_1 = rng.gen_range(0, results.len());
-                }
                 if index_0 > index_1 {
                     let temp = index_0;
                     index_0 = index_1;
@@ -383,7 +382,7 @@ mod tests {
                 assert!(&new != id_0);
                 assert!(&new != id_1);
                 assert!(&new > id_0);
-                assert!(&new < id_1);
+                assert!(&new < id_1 || id_0 == id_1);
                 results.insert(new);
             }
         }        
@@ -396,13 +395,13 @@ mod tests {
         for _ in 0..100 {
             let mut node = Node::new(NodeId::new(0));
             let first = node.begin();
-            let mut prev = node.end();
+            let mut prev = node.begin();
             for _ in 0..200 {
                 let new = node.new_id_with_bounds(&first, &prev);
-                assert!(&new != &first);
-                assert!(&new != &prev);
-                assert!(&new > &first);
-                assert!(&new < &prev);
+                assert!(new != first);
+                assert!(new != prev);
+                assert!(new > first);
+                assert!(new < prev || first == prev);
                 prev = new;
             }
         }
@@ -412,14 +411,11 @@ mod tests {
     fn test_id_right() {
         for _ in 0..100 {
             let mut node = Node::new(NodeId::new(0));
-            let last = node.end();
             let mut prev = node.begin();
             for _ in 0..200 {
-                let new = node.new_id_with_bounds(&prev, &last);
-                assert!(&new != &prev);
-                assert!(&new != &last);
-                assert!(&new > &prev);
-                assert!(&new < &last);
+                let new = node.new_id_with_bounds(&prev, &prev);
+                assert!(new != prev);
+                assert!(new > prev);
                 prev = new;
             }
         }

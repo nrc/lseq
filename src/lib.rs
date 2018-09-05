@@ -16,8 +16,6 @@ pub struct Node {
     initial_width: u64,
 }
 
-// TODO IdSlice?
-
 impl Node {
     pub fn new(id: NodeId) -> Node {
         let mut result = Node {
@@ -188,8 +186,6 @@ impl Id {
         self.indices.len()
     }
 }
-
-// FIXME add IdSlice to avoid passing around depth
 
 fn random_bool() -> bool {
     let mut rng = thread_rng();

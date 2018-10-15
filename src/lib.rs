@@ -27,6 +27,13 @@ impl Node {
         result
     }
 
+    pub fn begin(&self) -> Id {
+        Id {
+            indices: vec![0],
+            node: self.id,
+        }
+    }
+
     pub fn new_id_with_bounds(&mut self, lower_bound: &Id, upper_bound: &Id) -> Id {
         assert!(lower_bound.depth() > 0);
         assert!(upper_bound.depth() > 0);
@@ -148,13 +155,6 @@ impl Node {
         new_id.indices[level] = new_index;
         new_id.indices.truncate(level + 1);
         new_id
-    }
-
-    pub fn begin(&self) -> Id {
-        Id {
-            indices: vec![0],
-            node: self.id,
-        }
     }
 }
 

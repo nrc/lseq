@@ -3,7 +3,8 @@ use lseq::{Id, Node, NodeId};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::net::{TcpStream, TcpListener};
-use std::io::{Read, Write};
+use std::io::{Read, Write, stdin, stdout};
+use std::process::exit;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -34,28 +35,92 @@ struct Buffer {
 
 impl Client {
     fn run(&self) {
-        let mut clone_buf = self.buffer.clone();
+        let clone_buf = self.buffer.clone();
         thread::spawn(move || {
-            loop {
-                Client::listen_stdin(clone_buf.clone());
-            }
+            Client::listen_stdin(clone_buf.clone());
         });
 
-        loop {
-            self.listen_server();
-        }
+        self.listen_server();
     }
 
     // wait for user changes, update the buffer, and send them to the server
     fn listen_stdin(buf: Arc<Mutex<Buffer>>) {
-        let mut buf = buf.lock().unwrap();
-        unimplemented!();
+        let mut input = String::new();
+        loop {
+            print!("{}\n> ", buf.lock().unwrap().to_string());
+            stdout().flush().unwrap();
+            input.clear();
+
+            stdin().read_line(&mut input).unwrap();
+            if input.starts_with('.') {
+                let mut chars = input.chars();
+                chars.next(); // '.'
+                match chars.next() {
+                    Some('i') => {
+                        assert_eq!(chars.next(), Some(' '));
+                        let mut s = String::new();
+                        while let Some(c) = chars.next() {
+                            if c.is_whitespace() {
+                                break;
+                            }
+                            s.push(c);
+                        }
+                        let index = s.parse().unwrap();
+
+                        let mut s = String::new();
+                        while let Some(c) = chars.next() {
+                            if c == '\n' {
+                                break;
+                            }
+                            s.push(c);
+                        }
+
+                        let mut buf = buf.lock().unwrap();
+                        buf.insert(index, &s);
+                    }
+                    Some('d') => {
+                        assert_eq!(chars.next(), Some(' '));
+                        let mut s = String::new();
+                        while let Some(c) = chars.next() {
+                            if c.is_whitespace() {
+                                break;
+                            }
+                            s.push(c);
+                        }
+                        eprintln!("`{}`", s);
+                        let index = s.parse().unwrap();
+
+                        let mut s = String::new();
+                        while let Some(c) = chars.next() {
+                            if c.is_whitespace() {
+                                break;
+                            }
+                            s.push(c);
+                        }
+                        eprintln!("`{}`", s);
+                        let len = s.parse().unwrap();
+
+                        let mut buf = buf.lock().unwrap();
+                        buf.delete(index, len);
+                    }
+                    Some('q') => exit(0),
+                    c => {
+                        println!("unknown command {:?}", c);
+                    }
+                }
+            } else {
+                let mut buf = buf.lock().unwrap();
+                buf.append(input.trim_right());
+            }
+        }
     }
 
     // wait for broadcasts from the server and update the buffer
     fn listen_server(&self) {
-        let mut buf = self.buffer.lock().unwrap();
-        unimplemented!();
+        loop {
+            //let mut buf = self.buffer.lock().unwrap();
+            // TODO
+        }
     }
 
 }
@@ -105,6 +170,7 @@ impl Buffer {
         self.internal.drain(position..position + len);
     }
 
+    // TODO should be a Display impl
     fn to_string(&self) -> String {
         let mut result = String::new();
         self.internal.iter().for_each(|(_, c)| result.push(*c));

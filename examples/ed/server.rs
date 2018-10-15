@@ -47,7 +47,7 @@ impl Server {
         let all_streams = self.streams.clone();
         thread::spawn(move || {
             // listen to client, re-broadcast any changes.
-            unimplemented!();
+            // unimplemented!();
         });
     }
 }

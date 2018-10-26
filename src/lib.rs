@@ -10,7 +10,7 @@ const DEFAULT_BOUNDARY: u64 = 10;
 
 /// Generates unique ids. There should be one `Node` per replicated instance.
 pub struct Node {
-    id: NodeId,
+    pub id: NodeId,
     // True = upper, false = lower
     directions: BitVec,
     initial_width: u64,
@@ -115,7 +115,7 @@ impl Node {
             self.directions.push(result);
         }
 
-        return self.directions[level];
+        self.directions[level]
     }
 
     fn pick_index(&mut self, level: usize, lower_bound: u64, upper_bound: u64) -> u64 {
@@ -178,7 +178,7 @@ pub struct Id {
     // a node in the nth level of the tree.
     indices: Vec<u64>,
     // The `Node` which created this id.
-    node: NodeId,
+    pub node: NodeId,
 }
 
 impl Id {
